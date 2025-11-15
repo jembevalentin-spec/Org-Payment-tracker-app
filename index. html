@@ -1,0 +1,122 @@
+import tkinter as tk
+from tkinter import messagebox, ttk
+import sqlite3
+from datetime import datetime, timedelta
+from plyer import notification
+
+# Database setup
+conn = sqlite3.connect('payments.db')
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS debtors (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    total_owed REAL,
+    deadline TEXT
+)''')
+c.execute('''CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY,
+    debtor_id INTEGER,
+    amount REAL,
+    date TEXT,
+    FOREIGN KEY(debtor_id) REFERENCES debtors(id)
+)''')
+conn.commit()
+
+class PaymentTrackerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Payment Tracker")
+        self.create_widgets()
+        self.load_debtors()
+        self.check_notifications()
+
+    def create_widgets(self):
+        # Dashboard
+        self.tree = ttk.Treeview(self.root, columns=('Name', 'Remaining', 'Deadline', 'Status'), show='headings')
+        self.tree.heading('Name', text='Name')
+        self.tree.heading('Remaining', text='Remaining Balance')
+        self.tree.heading('Deadline', text='Deadline')
+        self.tree.heading('Status', text='Status')
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        # Buttons
+        btn_frame = tk.Frame(self.root)
+        btn_frame.pack()
+        tk.Button(btn_frame, text="Add Debtor", command=self.add_debtor).pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="Record Payment", command=self.record_payment).pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="View History", command=self.view_history).pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
+
+    def add_debtor(self):
+        # Simple dialog for adding debtor (expand with proper form)
+        name = tk.simpledialog.askstring("Add Debtor", "Name:")
+        total = tk.simpledialog.askfloat("Add Debtor", "Total Owed:")
+        deadline = tk.simpledialog.askstring("Add Debtor", "Deadline (YYYY-MM-DD):")
+        if name and total and deadline:
+            c.execute("INSERT INTO debtors (name, total_owed, deadline) VALUES (?, ?, ?)", (name, total, deadline))
+            conn.commit()
+            self.refresh()
+
+    def record_payment(self):
+        # Select debtor and enter payment
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showerror("Error", "Select a debtor first.")
+            return
+        debtor_id = self.tree.item(selected[0], 'values')[0]  # Assuming ID is hidden; adjust if needed
+        amount = tk.simpledialog.askfloat("Record Payment", "Amount:")
+        date = datetime.now().strftime('%Y-%m-%d')
+        if amount:
+            c.execute("INSERT INTO payments (debtor_id, amount, date) VALUES (?, ?, ?)", (debtor_id, amount, date))
+            conn.commit()
+            self.refresh()
+
+    def load_debtors(self):
+        self.tree.delete(*self.tree.get_children())
+        debtors = c.execute("SELECT id, name, total_owed, deadline FROM debtors").fetchall()
+        for debtor in debtors:
+            debtor_id, name, total, deadline = debtor
+            paid = c.execute("SELECT SUM(amount) FROM payments WHERE debtor_id=?", (debtor_id,)).fetchone()[0] or 0
+            remaining = total - paid
+            status = self.get_status(deadline)
+            self.tree.insert('', 'end', values=(debtor_id, name, f"${remaining:.2f}", deadline, status))
+
+    def get_status(self, deadline):
+        today = datetime.now().date()
+        dl = datetime.strptime(deadline, '%Y-%m-%d').date()
+        if dl < today:
+            return "Overdue"
+        elif dl <= today + timedelta(days=3):
+            return "Near Deadline"
+        return "On Time"
+
+    def view_history(self):
+        # Simple history view (expand to a new window)
+        selected = self.tree.selection()
+        if not selected:
+            return
+        debtor_id = self.tree.item(selected[0], 'values')[0]
+        history = c.execute("SELECT date, amount FROM payments WHERE debtor_id=? ORDER BY date", (debtor_id,)).fetchall()
+        hist_str = "\n".join([f"{d}: ${a:.2f}" for d, a in history])
+        messagebox.showinfo("Payment History", hist_str or "No payments recorded.")
+
+    def check_notifications(self):
+        debtors = c.execute("SELECT name, deadline FROM debtors").fetchall()
+        for name, deadline in debtors:
+            status = self.get_status(deadline)
+            if status in ["Near Deadline", "Overdue"]:
+                notification.notify(
+                    title="Payment Deadline Alert",
+                    message=f"{name}'s deadline is {status.lower()}.",
+                    timeout=10
+                )
+
+    def refresh(self):
+        self.load_debtors()
+        self.check_notifications()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = PaymentTrackerApp(root)
+    root.mainloop()
+    
